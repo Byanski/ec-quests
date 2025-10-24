@@ -41,7 +41,7 @@ local function OpenNui(arg)
     end
 end
 
-if Config.UseItem then
+if Config.UseItem and GetResourceState('qb-core') ~= "started" then
     exports('quest_tablet', function(data, slot)
         OpenNui(true)
     end)
@@ -50,6 +50,10 @@ else
         OpenNui(true)
     end)
 end
+
+RegisterNetEvent('ec-quests:qb-useitem', function()
+    OpenNui(true)
+end)
 
 RegisterNUICallback('hide-ui', function(_, cb)
     OpenNui(false)

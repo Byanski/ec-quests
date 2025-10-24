@@ -1,7 +1,8 @@
-if GetResourceState('qb-inventory') ~= "started" then
+if GetResourceState('qb-inventory') and GetResourceState('qb-core') ~= "started" then
     return
 end
 
+local QBCore = exports['qb-core']:GetCoreObject()
 local inv = exports['qb-inventory']
 
 GetItemCount = function(source, item)
@@ -16,3 +17,8 @@ end
 RemoveItem = function(source, item, count)
     inv:RemoveItem(source, item, count, false, 'ec-quest')
 end
+
+
+QBCore.Functions.CreateUseableItem("quest_tablet", function(source, item)
+    TriggerClientEvent('ec-quests:qb-useitem', source)
+end)
