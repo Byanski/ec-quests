@@ -41,17 +41,18 @@ local function OpenNui(arg)
     end
 end
 
-if Config.UseItem and GetResourceState('qb-core') ~= "started" then
-    exports('quest_tablet', function(data, slot)
-        OpenNui(true)
-    end)
-else
-    RegisterCommand('quests', function()
-        OpenNui(true)
-    end)
-end
+-- OX Inventory Export
+exports('quest_tablet', function(data, slot)
+    OpenNui(true)
+end)
 
+-- QB/Qbox Event Handler
 RegisterNetEvent('ec-quests:qb-useitem', function()
+    OpenNui(true)
+end)
+
+-- Command fallback
+RegisterCommand('quests', function()
     OpenNui(true)
 end)
 
@@ -85,7 +86,7 @@ RegisterNUICallback('setQuestMenu', function(_, cb)
     local playerXP = lib.callback.await('ec-quests:getXP', false)
     cb({
         theme = Config.PrimaryColor,
-        quests = lib.callback.await('ec-quests:getQuest', false), -- lib.callback.await('ec-quests:getQuest', false)
+        quests = lib.callback.await('ec-quests:getQuest', false),
         playerXP = playerXP
     })
 end)

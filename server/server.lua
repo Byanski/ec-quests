@@ -2,6 +2,26 @@ local refreshTime
 local leaderboard = {}
 local activeQuest = {}
 
+-- Ensure bridge functions exist (fallback)
+GetPlayerIdentifier = GetPlayerIdentifier or function(source)
+    return GetPlayerIdentifierByType(source, 'license') or GetPlayerIdentifierByType(source, 'license2')
+end
+
+GetPlayerNameCustom = GetPlayerNameCustom or function(source)
+    return GetPlayerName(source)
+end
+
+AddMoney = AddMoney or function(source, amount)
+    -- Fallback - you'll need to implement this based on your framework
+    print(('Player %s should receive $%d'):format(source, amount))
+    return true
+end
+
+HasAdminPermission = HasAdminPermission or function(source)
+    return IsPlayerAceAllowed(source, "group.admin")
+end
+
+-- Player registry functions
 local function addPlayerToRegistry(identifier)
     local data = GetResourceKvpString('questPlayers')
     local players = data and json.decode(data) or {}
@@ -12,8 +32,9 @@ local function addPlayerToRegistry(identifier)
 end
 
 local function markQuestCompleted(source, questId)
-    local identifier = GetPlayerIdentifierByType(source, 'license') or GetPlayerIdentifierByType(source, 'license2')
+    local identifier = GetPlayerIdentifier(source)
     if not identifier then
+        print(('Failed to get identifier for player %s'):format(source))
         return
     end
 
@@ -39,7 +60,7 @@ local function resetAllQuests()
 end
 
 local function getPlayerCompleted(source)
-    local identifier = GetPlayerIdentifierByType(source, 'license') or GetPlayerIdentifierByType(source, 'license2')
+    local identifier = GetPlayerIdentifier(source)
     if not identifier then
         return {}
     end
@@ -50,6 +71,7 @@ local function getPlayerCompleted(source)
     return completed
 end
 
+-- Utility functions
 local function Roll(chance)
     local roll = math.random(100)
     return roll <= chance
@@ -90,158 +112,194 @@ local function loadQuest()
 
     SetResourceKvp('activeQuest', json.encode(activeQuest))
     resetAllQuests()
+    print(('[EC-Quests] Loaded %d active quests'):format(#activeQuest))
     return activeQuest
 end
 
+-- XP and leveling functions
+local function getXP(source)
+    local identifier = GetPlayerIdentifier(source)
+    if not identifier then
+        print(('Player %s has no valid identifier!'):format(source))
+        return nil
+    end
+
+    local result = MySQL.query.await('SELECT player, level, xp, name FROM enhanced_quests_levels WHERE player = ?',
+        {identifier})
+    
+    if result and result[1] then
+        return result[1]
+    end
+    
+    -- Create new player entry
+    local playerName = GetPlayerNameCustom(source)
+    MySQL.insert('INSERT INTO `enhanced_quests_levels` (player, level, xp, name) VALUES (?, ?, ?, ?)',
+        {identifier, 1, 0, playerName})
+    
+    return {
+        player = identifier,
+        level = 1,
+        xp = 0,
+        name = playerName
+    }
+end
+
+local function calculateXPForLevel(level)
+    if level == 1 then
+        return Config.XpToStart
+    end
+    return math.ceil(Config.XpToStart * (Config.XPmultiplier ^ (level - 1)))
+end
+
+local function processLevelUp(playerXP, xpGained)
+    local totalXP = playerXP.xp + xpGained
+    local currentLevel = playerXP.level
+    
+    while true do
+        local xpNeeded = calculateXPForLevel(currentLevel)
+        if totalXP < xpNeeded then
+            break
+        end
+        totalXP = totalXP - xpNeeded
+        currentLevel = currentLevel + 1
+    end
+    
+    return currentLevel, totalXP
+end
+
+-- Resource lifecycle
 AddEventHandler('onResourceStart', function(resourceName)
     if (GetCurrentResourceName() ~= resourceName) then
         return
     end
-    refreshTime = (tonumber(GetResourceKvpString('refreshTime') or '48'))
-    activeQuest = json.decode(GetResourceKvpString('activeQuest')) or loadQuest()
-    if refreshTime <= 0 then
-        refreshTime = Config.RefreshTime * 60 * 60
+    
+    -- Load refresh time
+    local savedTime = GetResourceKvpString('refreshTime')
+    refreshTime = tonumber(savedTime) or (Config.RefreshTime * 60 * 60)
+    
+    -- Load or generate quests
+    local savedQuests = GetResourceKvpString('activeQuest')
+    if savedQuests then
+        activeQuest = json.decode(savedQuests) or {}
     end
-    print('Resource started, refresh time set to:', refreshTime)
+    
+    if not activeQuest or #activeQuest == 0 then
+        activeQuest = loadQuest()
+    end
+    
+    print(('[EC-Quests] Resource started, refresh time: %d seconds'):format(refreshTime))
 end)
 
 AddEventHandler('onResourceStop', function(resourceName)
     if (GetCurrentResourceName() ~= resourceName) then
         return
     end
-    SetResourceKvp('refreshTime', tostring(refreshTime) or '48')
+    SetResourceKvp('refreshTime', tostring(refreshTime))
 end)
 
+-- Quest refresh timer
 Citizen.CreateThread(function()
     while true do
         Citizen.Wait(1000)
         refreshTime = refreshTime - 1
         if refreshTime <= 0 then
             refreshTime = Config.RefreshTime * 60 * 60
-            resetAllQuests()
-            SetResourceKvp('refreshTime', tostring(refreshTime) or '48')
+            SetResourceKvp('refreshTime', tostring(refreshTime))
             loadQuest()
         end
     end
 end)
 
+-- Callbacks
 lib.callback.register('ec-quests:refreshTime', function(source)
     return refreshTime
 end)
 
-RegisterCommand('RefreshQuest', function(source)
-    local src = source
-    if not src then
-        print('Quests have been refreshed.')
-        refreshTime = Config.RefreshTime * 60 * 60
-        resetAllQuests()
-        SetResourceKvp('refreshTime', tostring(refreshTime) or '48')
-        loadQuest()
-        return
-    end
-    if IsPlayerAceAllowed(src, "group.admin") or debug.mode then
-        refreshTime = Config.RefreshTime * 60 * 60
-        resetAllQuests()
-        SetResourceKvp('refreshTime', tostring(refreshTime) or '48')
-        loadQuest()
-        TriggerClientEvent('chat:addMessage', src, {
-            args = {'^2[EC-Quests]', 'Quests have been refreshed.'}
-        })
-    else
-        TriggerClientEvent('chat:addMessage', src, {
-            args = {'^1[EC-Quests]', 'You do not have permission to use this command.'}
-        })
-    end
-end, false)
-
-local function getXP(source)
-    local src = source
-    local identifier = GetPlayerIdentifierByType(src, 'license') or GetPlayerIdentifierByType(src, 'license2')
-    if not identifier then
-        print(('Player %s has no valid license identifier!'):format(src))
-        return nil
-    end
-
-    local result = MySQL.query.await('SELECT player, level, xp, name FROM enhanced_quests_levels WHERE player = ?',
-        {identifier})
-    if result[1] then
-        return result[1]
-    end
-    MySQL.insert('INSERT INTO `enhanced_quests_levels` (player, level, xp, name) VALUES (?, ?, ?, ?)',
-        {identifier, 1, 10, GetPlayerName(src)}, function(id)
-
-        end)
-    return {
-        identifier = identifier,
-        level = 1,
-        xp = 10,
-        name = GetPlayerName(src)
-    }
-end
-
 lib.callback.register('ec-quests:getXP', function(source)
     local player = getXP(source)
-    local XpToNext = Config.XpToStart * (Config.XPmultiplier ^ (player.level - 1))
-    if player.level == 1 then
-        XpToNext = Config.XpToStart
+    if not player then
+        return {1, 0, Config.XpToStart}
     end
-    XpToNext = math.ceil(XpToNext)
-    return {player.level, player.xp, XpToNext} or {1, 1, 1}
+    
+    local xpToNext = calculateXPForLevel(player.level)
+    return {player.level, player.xp, xpToNext}
 end)
 
 lib.callback.register('ec-quests:claimReward', function(source, ID)
     local Quest = Config.Quests[ID]
+    if not Quest then
+        print(('Invalid quest ID: %s'):format(ID))
+        return false
+    end
 
+    -- Check if quest is already completed
+    local completed = getPlayerCompleted(source)
+    if completed[ID] then
+        TriggerClientEvent('ox_lib:notify', source, {
+            title = 'Quests',
+            description = 'Quest already completed',
+            type = 'error'
+        })
+        return false
+    end
+
+    -- Check if player has required items
     for _, v in ipairs(Quest.items) do
-        if GetItemCount(source, v.name) < v.count then
+        local count = GetItemCount(source, v.name)
+        if count < v.count then
             TriggerClientEvent('ox_lib:notify', source, {
                 title = 'Quests',
-                description = 'Error',
+                description = 'Missing required items',
                 type = 'error'
             })
-            return
+            return false
         end
     end
 
+    -- Remove items
     for _, v in ipairs(Quest.items) do
         RemoveItem(source, v.name, v.count)
     end
 
+    -- Process XP and level up
     local playerXP = getXP(source)
-    playerXP.xp = playerXP.xp + Quest.xp
-    local restXP = playerXP.xp
-
-    while true do
-        local XpToNext = Config.XpToStart * (Config.XPmultiplier ^ (playerXP.level - 1))
-        if restXP < XpToNext then
-            break
-        end
-        restXP = restXP - XpToNext
-        playerXP.level = playerXP.level + 1
+    if not playerXP then
+        return false
     end
 
-    playerXP.xp = restXP
-
+    local newLevel, newXP = processLevelUp(playerXP, Quest.xp)
+    
+    -- Mark quest as completed
     markQuestCompleted(source, ID)
-    local identifier = GetPlayerIdentifierByType(source, 'license') or GetPlayerIdentifierByType(source, 'license2')
+    
+    -- Update database
+    local identifier = GetPlayerIdentifier(source)
     MySQL.update('UPDATE enhanced_quests_levels SET xp = ?, level = ? WHERE player = ?',
-        {restXP > 0 and restXP or playerXP.xp, playerXP.level, identifier}, function(affectedRows)
-        end)
-    AddItem(source, 'money', Quest.reward * (Config.RewardMultiplierPerLevel ^ (playerXP.level - 1)))
+        {newXP, newLevel, identifier})
+    
+    -- Calculate and give reward
+    local rewardAmount = math.floor(Quest.reward * (Config.RewardMultiplierPerLevel ^ (newLevel - 1)))
+    AddMoney(source, rewardAmount)
+    
+    -- Notify player
     TriggerClientEvent('ox_lib:notify', source, {
-        title = 'Quests',
-        description = 'Completed',
+        title = 'Quest Completed!',
+        description = ('Received $%d and %d XP'):format(rewardAmount, Quest.xp),
         type = 'success'
     })
+    
     return true
 end)
 
 lib.callback.register('ec-quests:getQuest', function(source)
     local completed = getPlayerCompleted(source)
-
     local quests = {}
+    
     for _, quest in ipairs(activeQuest) do
-        local questCopy = table.clone(quest)
+        local questCopy = {}
+        for k, v in pairs(quest) do
+            questCopy[k] = v
+        end
         questCopy.claimed = completed[quest.id] == true
         quests[#quests + 1] = questCopy
     end
@@ -255,3 +313,30 @@ lib.callback.register('ec-quests:getLeaderboard', function(source)
     return leaderboard
 end)
 
+-- Commands
+RegisterCommand('RefreshQuest', function(source)
+    local src = source
+    
+    -- Server console
+    if not src or src == 0 then
+        print('[EC-Quests] Quests have been refreshed.')
+        refreshTime = Config.RefreshTime * 60 * 60
+        SetResourceKvp('refreshTime', tostring(refreshTime))
+        loadQuest()
+        return
+    end
+    
+    -- Player command
+    if HasAdminPermission(src) or debug.mode then
+        refreshTime = Config.RefreshTime * 60 * 60
+        SetResourceKvp('refreshTime', tostring(refreshTime))
+        loadQuest()
+        TriggerClientEvent('chat:addMessage', src, {
+            args = {'^2[EC-Quests]', 'Quests have been refreshed.'}
+        })
+    else
+        TriggerClientEvent('chat:addMessage', src, {
+            args = {'^1[EC-Quests]', 'You do not have permission to use this command.'}
+        })
+    end
+end, false)
